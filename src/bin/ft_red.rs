@@ -9,7 +9,7 @@ use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
 use fastnear_primitives::near_primitives::account::id::AccountType;
 use fastnear_primitives::near_primitives::types::{AccountId, BlockHeight};
 use fastnear_primitives::types::ChainId;
-use near_crypto::PublicKey;
+use near_crypto::{PublicKey, PublicKeyHandle};
 use redis_db::RedisDB;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,9 @@ pub struct PairUpdate {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct PublicKeyPair {
     account_id: String,
-    public_key: PublicKey,
+    // The on-chain handle: ed25519/secp256k1 keys print unchanged, while ML-DSA-65
+    // keys become `ml-dsa-65-hash:...`, the form access-key lists and the API use.
+    public_key: PublicKeyHandle,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -254,13 +256,14 @@ fn extract_public_keys(
         }
         match action.action {
             ActionKind::AddKey | ActionKind::DeleteKey => {
-                let public_key = PublicKey::from_str(
+                let public_key: PublicKeyHandle = PublicKey::from_str(
                     &action
                         .public_key
                         .as_ref()
                         .expect("Missing PublicKey for AddKey action"),
                 )
-                .expect("Invalid public key");
+                .expect("Invalid public key")
+                .into();
                 if action.action == ActionKind::AddKey {
                     pairs.insert(
                         PublicKeyPair {
@@ -291,7 +294,8 @@ fn extract_public_keys(
                     AccountId::from_str(&action.account_id).expect("Invalid account_id");
                 if account_id.get_account_type() == AccountType::NearImplicitAccount {
                     let bytes = hex::decode(&account_id.as_str()).expect("Invalid hex");
-                    let public_key = PublicKey::ED25519(bytes.as_slice().try_into().unwrap());
+                    let public_key: PublicKeyHandle =
+                        PublicKey::ED25519(bytes.as_slice().try_into().unwrap()).into();
                     pairs.insert(
                         PublicKeyPair {
                             account_id: account_id.to_string(),
