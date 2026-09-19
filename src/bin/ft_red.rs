@@ -30,8 +30,6 @@ pub struct PairUpdate {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct PublicKeyPair {
     account_id: String,
-    // The on-chain handle: ed25519/secp256k1 keys print unchanged, while ML-DSA-65
-    // keys become `ml-dsa-65-hash:...`, the form access-key lists and the API use.
     public_key: PublicKeyHandle,
 }
 
