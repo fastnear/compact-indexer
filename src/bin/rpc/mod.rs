@@ -1,6 +1,7 @@
 use base64::prelude::*;
 use fastnear_primitives::near_primitives::serialize::dec_format;
-use fastnear_primitives::near_primitives::types::{AccountId, BlockHeight};
+use fastnear_primitives::near_primitives::types::BlockHeight;
+use futures::{StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -212,37 +213,32 @@ pub async fn fetch_from_rpc(
     tasks: &[RpcTask],
     rpc_config: &RpcConfig,
 ) -> Result<Vec<RpcResultPair>, RpcError> {
-    let mut results = Vec::new();
     if tasks.is_empty() {
-        return Ok(results);
+        return Ok(Vec::new());
     }
     let start = std::time::Instant::now();
     let client = Client::new();
-    let (tx, mut rx) = mpsc::channel::<Result<RpcResultPair, RpcError>>(rpc_config.concurrency);
     let rpcs = &rpc_config.rpcs;
-
-    for (i, task) in tasks.iter().enumerate() {
+    let futures = tasks.iter().enumerate().map(|(i, task)| {
         let client = client.clone();
-        let tx = tx.clone();
         let rpcs = rpcs.clone();
         let task = task.clone();
         let bearer_token = rpc_config.bearer_token.clone();
         let timeout = rpc_config.timeout;
         let num_iterations = rpc_config.num_iterations;
 
-        // Spawn a new asynchronous task for each request
-        task::spawn(async move {
+        async move {
             let mut index = i;
             let mut iterations = num_iterations;
             let mut sleep = Duration::from_millis(100);
-            let res = loop {
+            loop {
                 let url = &rpcs[index % rpcs.len()];
                 index += 1;
                 let res = execute_task(&client, &url, &task, &bearer_token, timeout).await;
 
                 match res {
                     Ok(result) => {
-                        break Ok(RpcResultPair { task, result });
+                        return Ok(RpcResultPair { task, result });
                     }
                     Err(e) => {
                         if !matches!(e, RpcError::RetriableRpcError(_)) {
@@ -251,39 +247,26 @@ pub async fn fetch_from_rpc(
                         // Need to retry this task
                         iterations -= 1;
                         if iterations == 0 {
-                            break Err(e);
+                            return Err(e);
                         }
                         tokio::time::sleep(sleep).await;
                         sleep *= 2;
                     }
                 }
-            };
-            tx.send(res).await.expect("Failed to send task result");
-        });
-    }
-
-    // Close the sender to ensure the loop below exits once all tasks are completed
-    drop(tx);
-
-    let mut errors = Vec::new();
-    // Wait for all tasks to complete
-    while let Some(res) = rx.recv().await {
-        match res {
-            Ok(pair) => results.push(pair),
-            Err(e) => {
-                errors.push(e);
             }
         }
-    }
+    });
+
+    let results = futures::stream::iter(futures)
+        .buffered(rpc_config.concurrency)
+        .try_collect::<Vec<_>>()
+        .await?;
+
     let duration = start.elapsed().as_millis();
 
     tracing::debug!(target: TARGET_RPC, "Query {}ms: fetch_from_rpc {} tasks",
         duration,
         tasks.len());
-
-    if let Some(err) = errors.pop() {
-        return Err(err);
-    }
 
     Ok(results)
 }

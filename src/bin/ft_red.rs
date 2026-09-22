@@ -9,7 +9,7 @@ use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
 use fastnear_primitives::near_primitives::account::id::AccountType;
 use fastnear_primitives::near_primitives::types::{AccountId, BlockHeight};
 use fastnear_primitives::types::ChainId;
-use near_crypto::PublicKey;
+use near_crypto::{PublicKey, PublicKeyHandle};
 use redis_db::RedisDB;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ pub struct PairUpdate {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct PublicKeyPair {
     account_id: String,
-    public_key: PublicKey,
+    public_key: PublicKeyHandle,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -42,6 +42,7 @@ pub enum PublicKeyUpdateType {
 
 #[tokio::main]
 async fn main() {
+    #[allow(deprecated)]
     openssl_probe::init_ssl_cert_env_vars();
     dotenv().ok();
 
@@ -102,6 +103,12 @@ async fn main() {
     let num_threads = std::env::var("NUM_THREADS")
         .map(|s| s.parse::<u64>().expect("Failed to parse NUM_THREADS"))
         .unwrap_or(4);
+    let num_lookahead_threads = std::env::var("NUM_LOOKAHEAD_THREADS")
+        .map(|s| {
+            s.parse::<u64>()
+                .expect("Failed to parse NUM_LOOKAHEAD_THREADS")
+        })
+        .unwrap_or(4);
 
     let (sender, receiver) = mpsc::channel(100);
     let mut builder = fetcher::FetcherConfigBuilder::new()
@@ -111,7 +118,10 @@ async fn main() {
     if let Some(auth_bearer_token) = auth_bearer_token {
         builder = builder.auth_bearer_token(auth_bearer_token);
     }
-    tokio::spawn(fetcher::start_fetcher(builder.build(), sender, is_running));
+    let mut config = builder.build();
+    // Temporary fix, since FetcherConfigBuilder doesn't support num_lookahead_threads
+    config.num_lookahead_threads = num_lookahead_threads;
+    tokio::spawn(fetcher::start_fetcher(config, sender, is_running));
 
     listen_blocks(receiver, write_redis_db, chain_id).await;
 }
@@ -244,13 +254,14 @@ fn extract_public_keys(
         }
         match action.action {
             ActionKind::AddKey | ActionKind::DeleteKey => {
-                let public_key = PublicKey::from_str(
+                let public_key: PublicKeyHandle = PublicKey::from_str(
                     &action
                         .public_key
                         .as_ref()
                         .expect("Missing PublicKey for AddKey action"),
                 )
-                .expect("Invalid public key");
+                .expect("Invalid public key")
+                .into();
                 if action.action == ActionKind::AddKey {
                     pairs.insert(
                         PublicKeyPair {
@@ -281,7 +292,8 @@ fn extract_public_keys(
                     AccountId::from_str(&action.account_id).expect("Invalid account_id");
                 if account_id.get_account_type() == AccountType::NearImplicitAccount {
                     let bytes = hex::decode(&account_id.as_str()).expect("Invalid hex");
-                    let public_key = PublicKey::ED25519(bytes.as_slice().try_into().unwrap());
+                    let public_key: PublicKeyHandle =
+                        PublicKey::ED25519(bytes.as_slice().try_into().unwrap()).into();
                     pairs.insert(
                         PublicKeyPair {
                             account_id: account_id.to_string(),

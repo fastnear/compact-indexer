@@ -126,7 +126,7 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                 receiver_id: account_id,
                 receipt_id,
                 receipt,
-                priority,
+                _priority,
             } = outcome.receipt;
             let predecessor_id = predecessor_id.to_string();
             let account_id = account_id.to_string();
@@ -138,6 +138,8 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                 logs,
                 ..
             } = outcome.execution_outcome.outcome;
+            let tokens_burnt = tokens_burnt.as_yoctonear();
+            let gas_burnt = gas_burnt.as_gas();
             let status = match &execution_status {
                 ExecutionStatusView::Unknown => ReceiptStatus::Failure,
                 ExecutionStatusView::Failure(_) => ReceiptStatus::Failure,
@@ -153,6 +155,7 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                     gas_price,
                     ..
                 } => {
+                    let gas_price = gas_price.as_yoctonear();
                     for (log_index, log) in logs.into_iter().enumerate() {
                         if log.starts_with(EVENT_LOG_PREFIX) {
                             let log_index = u16::try_from(log_index).expect("Log index overflow");
@@ -253,6 +256,14 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                 ActionView::UseGlobalContractByAccountId { .. } => {
                                     ActionKind::UseGlobalContractByAccountId
                                 }
+                                ActionView::DeterministicStateInit { .. } => {
+                                    ActionKind::DeterministicStateInit
+                                }
+                                ActionView::TransferToGasKey { .. } => ActionKind::TransferToGasKey,
+                                ActionView::WithdrawFromGasKey { .. } => {
+                                    ActionKind::WithdrawFromGasKey
+                                }
+                                ActionView::DelegateV2 { .. } => ActionKind::DelegateV2,
                             },
                             contract_hash: match &action {
                                 ActionView::DeployContract { code } => {
@@ -265,6 +276,12 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                     Some(public_key.to_string())
                                 }
                                 ActionView::DeleteKey { public_key, .. } => {
+                                    Some(public_key.to_string())
+                                }
+                                ActionView::TransferToGasKey { public_key, .. } => {
+                                    Some(public_key.to_string())
+                                }
+                                ActionView::WithdrawFromGasKey { public_key, .. } => {
                                     Some(public_key.to_string())
                                 }
                                 _ => None,
@@ -285,13 +302,20 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                 ActionView::Transfer { deposit, .. } => Some(*deposit),
                                 ActionView::Stake { stake, .. } => Some(*stake),
                                 ActionView::FunctionCall { deposit, .. } => Some(*deposit),
+                                ActionView::DeterministicStateInit { deposit, .. } => {
+                                    Some(*deposit)
+                                }
+                                ActionView::TransferToGasKey { deposit, .. } => Some(*deposit),
+                                ActionView::WithdrawFromGasKey { amount, .. } => Some(*amount),
                                 _ => None,
-                            },
+                            }
+                            .map(|d| d.as_yoctonear()),
                             gas_price,
                             attached_gas: match &action {
                                 ActionView::FunctionCall { gas, .. } => Some(*gas),
                                 _ => None,
-                            },
+                            }
+                            .map(|g| g.as_gas()),
                             gas_burnt,
                             tokens_burnt,
                             method_name: match &action {
