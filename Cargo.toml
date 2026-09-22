@@ -17,6 +17,10 @@ path = "src/bin/update_balances.rs"
 name = "balances-backfill"
 path = "src/bin/balances_backfill.rs"
 
+[[bin]]
+name = "ml-dsa-backfill"
+path = "src/bin/ml_dsa_backfill.rs"
+
 [dependencies]
 actix = "=0.13.0"
 actix-web = "4.3.0"
