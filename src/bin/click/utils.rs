@@ -264,6 +264,9 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                     ActionKind::WithdrawFromGasKey
                                 }
                                 ActionView::DelegateV2 { .. } => ActionKind::DelegateV2,
+                                ActionView::UniversalStateInit { .. } => {
+                                    ActionKind::UniversalStateInit
+                                }
                             },
                             contract_hash: match &action {
                                 ActionView::DeployContract { code } => {
@@ -305,6 +308,7 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                 ActionView::DeterministicStateInit { deposit, .. } => {
                                     Some(*deposit)
                                 }
+                                ActionView::UniversalStateInit { deposit, .. } => Some(*deposit),
                                 ActionView::TransferToGasKey { deposit, .. } => Some(*deposit),
                                 ActionView::WithdrawFromGasKey { amount, .. } => Some(*amount),
                                 _ => None,

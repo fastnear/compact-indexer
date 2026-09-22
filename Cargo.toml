@@ -1,6 +1,6 @@
 [package]
 name = "compact-indexer"
-version = "0.37.0"
+version = "0.38.0-rc.2"
 authors = ["Eugene The Dream"]
 rust-version = "1.91.0"
 edition = "2021"
@@ -57,9 +57,9 @@ hex = "0.4.3"
 reqwest = { version = "0.12.2", features = ["json"] }
 base64 = "0.21.5"
 
-fastnear-primitives = "0.37.0"
-fastnear-neardata-fetcher = "0.37.0"
-near-crypto = "0.37.0"
+fastnear-primitives = "0.38.0-rc.2"
+fastnear-neardata-fetcher = "0.38.0-rc.2"
+near-crypto = "0.38.0-rc.2"
 
 signal-hook = "0.3.18"
 futures = "0.3.31"

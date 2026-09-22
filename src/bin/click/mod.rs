@@ -34,6 +34,7 @@ pub enum ActionKind {
     TransferToGasKey = 15,
     WithdrawFromGasKey = 16,
     DelegateV2 = 17,
+    UniversalStateInit = 18,
 }
 
 #[derive(Serialize)]
