@@ -117,7 +117,15 @@ async fn access_keys(
         keys.iter()
             .filter_map(|key| {
                 let public_key = key["public_key"].as_str()?.to_string();
-                let permission = if key["access_key"]["permission"] == "FullAccess" {
+                // AccessKeyPermissionView has four variants over two axes: full vs
+                // function-call, each either plain or a gas key. Only the two full ones
+                // count as "f". Name them explicitly rather than testing for the
+                // function-call shapes, so a variant added later reads as limited: under-
+                // reporting hides an account, over-reporting claims a key controls one.
+                let permission = &key["access_key"]["permission"];
+                let permission = if permission == "FullAccess"
+                    || permission.get("GasKeyFullAccess").is_some()
+                {
                     FULL_ACCESS
                 } else {
                     LIMITED_ACCESS
