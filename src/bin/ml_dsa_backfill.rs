@@ -27,6 +27,8 @@ const OLD_PREFIX: &str = "pk:ml-dsa-65:";
 const SCAN_COUNT: usize = 5000;
 const FULL_ACCESS: &str = "f";
 const LIMITED_ACCESS: &str = "l";
+const GAS_KEY_FULL_ACCESS: &str = "gf";
+const GAS_KEY_LIMITED_ACCESS: &str = "gl";
 
 struct Args {
     chain: String,
@@ -84,48 +86,69 @@ async fn access_keys(
     rpc_url: &str,
     account_id: &str,
 ) -> anyhow::Result<Option<HashMap<String, String>>> {
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": "ml-dsa-backfill",
-        "method": "query",
-        "params": {
+    // Accounts with more than 100 keys are refused unpaginated (TOO_MANY_ACCESS_KEYS),
+    // so page with limit/after_key. `last_key` is only present while truncated.
+    let mut keys = HashMap::new();
+    let mut after_key: Option<String> = None;
+    loop {
+        let mut params = json!({
             "request_type": "view_access_key_list",
             "finality": "final",
             "account_id": account_id,
+            "limit": 100,
+        });
+        if let Some(after) = &after_key {
+            params["after_key"] = json!(after);
         }
-    });
-    let response: Value = client
-        .post(rpc_url)
-        .json(&request)
-        .send()
-        .await?
-        .json()
-        .await?;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "ml-dsa-backfill",
+            "method": "query",
+            "params": params,
+        });
+        let response: Value = client
+            .post(rpc_url)
+            .json(&request)
+            .send()
+            .await?
+            .json()
+            .await?;
 
-    if let Some(error) = response.get("error") {
-        let message = error.to_string();
-        if message.contains("UNKNOWN_ACCOUNT") || message.contains("does not exist") {
-            return Ok(None);
+        if let Some(error) = response.get("error") {
+            let message = error.to_string();
+            if message.contains("UNKNOWN_ACCOUNT") || message.contains("does not exist") {
+                return Ok(None);
+            }
+            anyhow::bail!("RPC error for {}: {}", account_id, message);
         }
-        anyhow::bail!("RPC error for {}: {}", account_id, message);
+
+        let page = response["result"]["keys"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Unexpected RPC response for {}", account_id))?;
+        keys.extend(page.iter().filter_map(|key| {
+            let public_key = key["public_key"].as_str()?.to_string();
+            // AccessKeyPermissionView has four variants over two axes: full vs
+            // function-call, each either plain or a gas key. These are the same four
+            // flags ft-red derives from the AddKey action. Name the full shapes
+            // explicitly so a variant added later reads as limited: under-reporting
+            // hides an account, over-reporting claims a key controls one.
+            let permission = &key["access_key"]["permission"];
+            let flag = if permission == "FullAccess" {
+                FULL_ACCESS
+            } else if permission.get("GasKeyFullAccess").is_some() {
+                GAS_KEY_FULL_ACCESS
+            } else if permission.get("GasKeyFunctionCall").is_some() {
+                GAS_KEY_LIMITED_ACCESS
+            } else {
+                LIMITED_ACCESS
+            };
+            Some((public_key, flag.to_string()))
+        }));
+        match response["result"]["last_key"].as_str() {
+            Some(last) => after_key = Some(last.to_string()),
+            None => return Ok(Some(keys)),
+        }
     }
-
-    let keys = response["result"]["keys"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Unexpected RPC response for {}", account_id))?;
-    Ok(Some(
-        keys.iter()
-            .filter_map(|key| {
-                let public_key = key["public_key"].as_str()?.to_string();
-                let permission = if key["access_key"]["permission"] == "FullAccess" {
-                    FULL_ACCESS
-                } else {
-                    LIMITED_ACCESS
-                };
-                Some((public_key, permission.to_string()))
-            })
-            .collect(),
-    ))
 }
 
 #[tokio::main]
