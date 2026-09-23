@@ -117,10 +117,17 @@ async fn access_keys(
         keys.iter()
             .filter_map(|key| {
                 let public_key = key["public_key"].as_str()?.to_string();
-                let permission = if key["access_key"]["permission"] == "FullAccess" {
-                    FULL_ACCESS
-                } else {
+                // Match ft-red, which calls a key limited only when the action carried a
+                // FunctionCall receiver. Testing for the literal "FullAccess" instead would
+                // demote every other shape the chain reports -- GasKeyFullAccess among them
+                // -- and hide a full-access key from /v1/public_key.
+                let permission = if key["access_key"]["permission"]
+                    .get("FunctionCall")
+                    .is_some()
+                {
                     LIMITED_ACCESS
+                } else {
+                    FULL_ACCESS
                 };
                 Some((public_key, permission.to_string()))
             })
