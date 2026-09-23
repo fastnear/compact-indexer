@@ -295,11 +295,23 @@ pub fn extract_rows(msg: BlockWithTxHashes) -> (Vec<ActionRow>, Vec<EventRow>) {
                                         AccessKeyPermissionView::FunctionCall {
                                             receiver_id,
                                             ..
+                                        }
+                                        | AccessKeyPermissionView::GasKeyFunctionCall {
+                                            receiver_id,
+                                            ..
                                         } => Some(receiver_id.to_string()),
                                         _ => None,
                                     }
                                 }
                                 _ => None,
+                            },
+                            is_gas_key: match &action {
+                                ActionView::AddKey { access_key, .. } => matches!(
+                                    access_key.permission,
+                                    AccessKeyPermissionView::GasKeyFullAccess { .. }
+                                        | AccessKeyPermissionView::GasKeyFunctionCall { .. }
+                                ),
+                                _ => false,
                             },
                             deposit: match &action {
                                 ActionView::Transfer { deposit, .. } => Some(*deposit),

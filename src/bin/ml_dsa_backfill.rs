@@ -27,6 +27,8 @@ const OLD_PREFIX: &str = "pk:ml-dsa-65:";
 const SCAN_COUNT: usize = 5000;
 const FULL_ACCESS: &str = "f";
 const LIMITED_ACCESS: &str = "l";
+const GAS_KEY_FULL_ACCESS: &str = "gf";
+const GAS_KEY_LIMITED_ACCESS: &str = "gl";
 
 struct Args {
     chain: String,
@@ -118,19 +120,21 @@ async fn access_keys(
             .filter_map(|key| {
                 let public_key = key["public_key"].as_str()?.to_string();
                 // AccessKeyPermissionView has four variants over two axes: full vs
-                // function-call, each either plain or a gas key. Only the two full ones
-                // count as "f". Name them explicitly rather than testing for the
-                // function-call shapes, so a variant added later reads as limited: under-
-                // reporting hides an account, over-reporting claims a key controls one.
+                // function-call, each either plain or a gas key. These are the same four
+                // flags ft-red derives from the AddKey action. Name the full shapes
+                // explicitly so a variant added later reads as limited: under-reporting
+                // hides an account, over-reporting claims a key controls one.
                 let permission = &key["access_key"]["permission"];
-                let permission = if permission == "FullAccess"
-                    || permission.get("GasKeyFullAccess").is_some()
-                {
+                let flag = if permission == "FullAccess" {
                     FULL_ACCESS
+                } else if permission.get("GasKeyFullAccess").is_some() {
+                    GAS_KEY_FULL_ACCESS
+                } else if permission.get("GasKeyFunctionCall").is_some() {
+                    GAS_KEY_LIMITED_ACCESS
                 } else {
                     LIMITED_ACCESS
                 };
-                Some((public_key, permission.to_string()))
+                Some((public_key, flag.to_string()))
             })
             .collect(),
     ))
