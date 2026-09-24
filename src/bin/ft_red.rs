@@ -6,6 +6,7 @@ use crate::click::{extract_rows, ActionKind, ActionRow, EventRow, ReceiptStatus}
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
 use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
+use fastnear_primitives::near_primitives::views::StateChangeValueView;
 use fastnear_primitives::near_primitives::account::id::AccountType;
 use fastnear_primitives::near_primitives::types::{AccountId, BlockHeight};
 use fastnear_primitives::types::ChainId;
@@ -156,6 +157,7 @@ async fn listen_blocks(
             .as_nanos() as u64;
         let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
         tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
+        let key_deletions = extract_key_deletions(&streamer_message);
         let (actions, events) = extract_rows(streamer_message);
 
         let mut to_update: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -176,7 +178,14 @@ async fn listen_blocks(
             &mut to_update,
             block_height,
         );
-        let public_key_updates = extract_public_keys(&actions, chain_id);
+        let mut public_key_updates = extract_public_keys(&actions, chain_id);
+        // A DeleteAccount drops every key on the account without a DeleteKey action
+        // ever appearing, so the actions alone leave those entries behind forever.
+        // The runtime's own state changes record each removal; apply them last so
+        // they win over whatever the actions said about the same key.
+        for pair in key_deletions {
+            public_key_updates.insert(pair, PublicKeyUpdateType::RemovedKey);
+        }
 
         tracing::log::info!(target: PROJECT_ID, "Updating {} accounts, {} keys", to_update.len(), public_key_updates.len());
         // tracing::log::info!(target: PROJECT_ID, "Updating keys {:?}", public_key_updates);
@@ -249,6 +258,41 @@ fn extract_staking_pairs(actions: &[ActionRow], _chain_id: ChainId) -> HashSet<P
     }
 
     pairs
+}
+
+/// Keys the block's state changes leave deleted: an `access_key_deletion` with no
+/// later `access_key_update` for the same account and key in the same block.
+/// Order within the block matters -- a key deleted and re-added in one block ends
+/// up present, and must not be removed.
+fn extract_key_deletions(msg: &BlockWithTxHashes) -> Vec<PublicKeyPair> {
+    let mut deleted: HashMap<PublicKeyPair, bool> = HashMap::new();
+    for shard in &msg.shards {
+        for change in &shard.state_changes {
+            let (account_id, public_key, is_deletion) = match &change.value {
+                StateChangeValueView::AccessKeyDeletion {
+                    account_id,
+                    public_key,
+                } => (account_id, public_key, true),
+                StateChangeValueView::AccessKeyUpdate {
+                    account_id,
+                    public_key,
+                    ..
+                } => (account_id, public_key, false),
+                _ => continue,
+            };
+            deleted.insert(
+                PublicKeyPair {
+                    account_id: account_id.to_string(),
+                    public_key: public_key.clone(),
+                },
+                is_deletion,
+            );
+        }
+    }
+    deleted
+        .into_iter()
+        .filter_map(|(pair, is_deletion)| is_deletion.then_some(pair))
+        .collect()
 }
 
 fn extract_public_keys(
