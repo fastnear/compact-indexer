@@ -53,6 +53,10 @@ pub struct ActionRow {
     pub contract_hash: Option<String>,
     pub public_key: Option<String>,
     pub access_key_contract_id: Option<String>,
+    /// The AddKey created a gas key: a prepaid gas balance and several nonces. True for
+    /// both `GasKeyFullAccess` and `GasKeyFunctionCall`; `access_key_contract_id` still
+    /// tells the two apart.
+    pub is_gas_key: bool,
     pub deposit: Option<u128>,
     pub gas_price: u128,
     pub attached_gas: Option<u64>,

@@ -37,7 +37,23 @@ pub struct PublicKeyPair {
 pub enum PublicKeyUpdateType {
     AddedFullAccess,
     AddedLimitedAccessKey,
+    AddedGasKeyFullAccess,
+    AddedGasKeyLimitedAccessKey,
     RemovedKey,
+}
+
+impl PublicKeyUpdateType {
+    /// Value stored under the account's field of `pk:<key>`. The API treats `f` and
+    /// `gf` as full access; `/all` returns every field regardless of flag.
+    fn redis_flag(self) -> Option<&'static str> {
+        match self {
+            Self::AddedFullAccess => Some("f"),
+            Self::AddedLimitedAccessKey => Some("l"),
+            Self::AddedGasKeyFullAccess => Some("gf"),
+            Self::AddedGasKeyLimitedAccessKey => Some("gl"),
+            Self::RemovedKey => None,
+        }
+    }
 }
 
 #[tokio::main]
@@ -173,22 +189,15 @@ async fn listen_blocks(
             }
             for (pair, update_type) in &public_key_updates {
                 let key = format!("pk:{}", pair.public_key);
-                match update_type {
-                    PublicKeyUpdateType::AddedFullAccess => {
+                match update_type.redis_flag() {
+                    Some(flag) => {
                         pipe.cmd("HSET")
                             .arg(key)
                             .arg(&pair.account_id)
-                            .arg("f")
+                            .arg(flag)
                             .ignore();
                     }
-                    PublicKeyUpdateType::AddedLimitedAccessKey => {
-                        pipe.cmd("HSET")
-                            .arg(key)
-                            .arg(&pair.account_id)
-                            .arg("l")
-                            .ignore();
-                    }
-                    PublicKeyUpdateType::RemovedKey => {
+                    None => {
                         pipe.cmd("HDEL").arg(key).arg(&pair.account_id).ignore();
                     }
                 }
@@ -268,10 +277,13 @@ fn extract_public_keys(
                             account_id: action.account_id.clone(),
                             public_key,
                         },
-                        if action.access_key_contract_id.is_none() {
-                            PublicKeyUpdateType::AddedFullAccess
-                        } else {
-                            PublicKeyUpdateType::AddedLimitedAccessKey
+                        // A gas key is created as one by the AddKey itself; the two
+                        // gas-key actions only move balance, so this never changes later.
+                        match (action.is_gas_key, action.access_key_contract_id.is_none()) {
+                            (false, true) => PublicKeyUpdateType::AddedFullAccess,
+                            (false, false) => PublicKeyUpdateType::AddedLimitedAccessKey,
+                            (true, true) => PublicKeyUpdateType::AddedGasKeyFullAccess,
+                            (true, false) => PublicKeyUpdateType::AddedGasKeyLimitedAccessKey,
                         },
                     );
                 } else {
