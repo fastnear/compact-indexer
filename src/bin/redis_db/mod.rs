@@ -6,6 +6,12 @@ use itertools::Itertools;
 use redis::aio::Connection;
 use redis::Client;
 use std::env;
+use std::time::Duration;
+
+// Enough retries to wait out a Redis/Valkey restart (incl. loading the dataset into memory).
+pub const MAX_RETRIES: usize = 40;
+pub const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 pub struct RedisDB {
     pub client: Client,
@@ -18,11 +24,23 @@ impl RedisDB {
         let client = Client::open(
             redis_url.unwrap_or_else(|| env::var("REDIS_URL").expect("Missing REDIS_URL env var")),
         )
-        .expect("Failed to connect to Redis");
-        let connection = client
-            .get_async_connection()
-            .await
-            .expect("Failed to on Redis connection");
+        .expect("Invalid Redis URL");
+        let mut delay = INITIAL_RETRY_DELAY;
+        let mut i = 0;
+        let connection = loop {
+            match client.get_async_connection().await {
+                Ok(connection) => break connection,
+                Err(err) => {
+                    tracing::log::error!(target: "redis", "Connect attempt #{}: {}", i, err);
+                    if i == MAX_RETRIES - 1 {
+                        panic!("Failed to connect to Redis: {}", err);
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, MAX_RETRY_DELAY);
+                }
+            }
+            i += 1;
+        };
         Self { client, connection }
     }
 
@@ -135,20 +153,19 @@ impl RedisDB {
 macro_rules! with_retries {
     ($db: expr, $f_async: expr) => {
         {
-            let mut delay = tokio::time::Duration::from_millis(100);
-            let max_retries = 10;
+            let mut delay = $crate::redis_db::INITIAL_RETRY_DELAY;
             let mut i = 0;
             loop {
                 match $f_async(&mut $db.connection).await {
                     Ok(v) => break Ok(v),
                     Err(err) => {
                         tracing::log::error!(target: "redis", "Attempt #{}: {}", i, err);
-                        tokio::time::sleep(delay).await;
-                        let _ = $db.reconnect().await;
-                        delay *= 2;
-                        if i == max_retries - 1 {
+                        if i == $crate::redis_db::MAX_RETRIES - 1 {
                             break Err(err);
                         }
+                        tokio::time::sleep(delay).await;
+                        let _ = $db.reconnect().await;
+                        delay = std::cmp::min(delay * 2, $crate::redis_db::MAX_RETRY_DELAY);
                     }
                 };
                 i += 1;

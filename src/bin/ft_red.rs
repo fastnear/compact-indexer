@@ -48,12 +48,14 @@ async fn main() {
 
     let is_running = Arc::new(AtomicBool::new(true));
     let ctrl_c_running = is_running.clone();
-    tokio::spawn(async move {
-        let mut signals = signal_hook::iterator::Signals::new(&[
-            signal_hook::consts::SIGTERM,
-            signal_hook::consts::SIGINT,
-        ])
-        .unwrap();
+    let mut signals = signal_hook::iterator::Signals::new(&[
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])
+    .unwrap();
+    // `signals.forever()` is blocking, so it needs a dedicated OS thread. Running it on a tokio
+    // worker blocks the runtime shutdown forever, e.g. the process hangs after a panic.
+    std::thread::spawn(move || {
         for sig in signals.forever() {
             match sig {
                 signal_hook::consts::SIGTERM | signal_hook::consts::SIGINT => {
@@ -87,9 +89,14 @@ async fn main() {
     tracing::log::info!(target: PROJECT_ID, "First redis block {}", first_block_height);
     let auth_bearer_token = std::env::var("AUTH_BEARER_TOKEN").ok();
 
-    let last_block_height: Option<BlockHeight> = write_redis_db
-        .get("meta:latest_block")
-        .await
+    let last_block_height: redis::RedisResult<Option<String>> =
+        with_retries!(write_redis_db, |connection| async {
+            redis::cmd("GET")
+                .arg("meta:latest_block")
+                .query_async(connection)
+                .await
+        });
+    let last_block_height: Option<BlockHeight> = last_block_height
         .expect("Failed to get the latest block")
         .map(|s| s.parse().expect("Failed to parse the latest block"));
 
@@ -121,9 +128,14 @@ async fn main() {
     let mut config = builder.build();
     // Temporary fix, since FetcherConfigBuilder doesn't support num_lookahead_threads
     config.num_lookahead_threads = num_lookahead_threads;
-    tokio::spawn(fetcher::start_fetcher(config, sender, is_running));
+    tokio::spawn(fetcher::start_fetcher(config, sender, is_running.clone()));
 
     listen_blocks(receiver, write_redis_db, chain_id).await;
+
+    // The fetcher only stops on its own when it fails. Exit with an error so it gets restarted.
+    if is_running.load(Ordering::SeqCst) {
+        panic!("Block stream ended unexpectedly");
+    }
 }
 
 async fn listen_blocks(
